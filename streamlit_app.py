@@ -14,6 +14,7 @@ from tabulate import tabulate
 import nltk
 import base64
 from io import BytesIO
+from collections import Counter
 
 # Download NLTK data
 try:
@@ -23,7 +24,7 @@ except LookupError:
 
 # Set page configuration
 st.set_page_config(
-    page_title="QAJ DOCX Format Checker by Ridwan Marqas",
+    page_title="QAJ Format Checker by Ridwan Marqas",
     page_icon="📄",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -73,6 +74,20 @@ st.markdown("""
         margin-top: 1.5rem;
         margin-bottom: 0.75rem;
     }
+    .highlight {
+        background-color: #ffffcc;
+        padding: 0.2rem;
+        border-radius: 0.2rem;
+    }
+    .table-container {
+        overflow-x: auto;
+    }
+    .citation-example {
+        font-family: monospace;
+        background-color: #f5f5f5;
+        padding: 0.2rem 0.4rem;
+        border-radius: 0.2rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -94,6 +109,11 @@ class DocumentAnalyzer:
             "structure": [],
             "formatting": [],
             "content": [],
+            "citations": [],
+            "tables_figures": [],
+            "references": [],
+            "section_numbering": [],
+            "academic_quality": [],
             "major_issues": []
         }
     
@@ -116,7 +136,10 @@ class DocumentAnalyzer:
             "styles": {},
             "paragraphs": [],
             "sections": [],
-            "tables": []
+            "tables": [],
+            "figures": [],
+            "citations": [],
+            "references": []
         }
         
         # Extract styles information
@@ -174,6 +197,48 @@ class DocumentAnalyzer:
                 para_info["runs"].append(run_info)
             
             doc_info["paragraphs"].append(para_info)
+            
+            # Extract citations
+            citation_pattern_numbered = r'\[\d+(?:[-–,]\d+)*\]'
+            citation_pattern_author_date = r'\([A-Za-z]+(?: et al\.)?(?:, \d{4}(?:[a-z])?)+\)'
+            
+            numbered_citations = re.findall(citation_pattern_numbered, para.text)
+            author_date_citations = re.findall(citation_pattern_author_date, para.text)
+            
+            if numbered_citations:
+                for citation in numbered_citations:
+                    doc_info["citations"].append({
+                        "text": citation,
+                        "type": "numbered",
+                        "paragraph_index": i
+                    })
+            
+            if author_date_citations:
+                for citation in author_date_citations:
+                    doc_info["citations"].append({
+                        "text": citation,
+                        "type": "author-date",
+                        "paragraph_index": i
+                    })
+            
+            # Check if paragraph is a reference
+            if "references" in para.text.lower() or "bibliography" in para.text.lower():
+                if len(para.text.split()) < 5:  # Likely a heading
+                    doc_info["references"].append({
+                        "type": "heading",
+                        "text": para.text,
+                        "paragraph_index": i
+                    })
+            
+            # Check for reference entries
+            if i > 0 and doc_info["paragraphs"][i-1]["text"].lower().startswith("reference"):
+                if re.match(r'^\[\d+\]', para.text) or re.match(r'^\d+\.', para.text):
+                    doc_info["references"].append({
+                        "type": "entry",
+                        "text": para.text,
+                        "paragraph_index": i,
+                        "format": "numbered" if re.match(r'^\[\d+\]', para.text) else "decimal"
+                    })
         
         # Extract section information
         for i, section in enumerate(doc.sections):
@@ -197,8 +262,18 @@ class DocumentAnalyzer:
                 "index": i,
                 "rows": len(table.rows),
                 "columns": len(table.columns),
-                "cells": []
+                "cells": [],
+                "caption": None,
+                "caption_position": None
             }
+            
+            # Look for table caption (usually before or after the table)
+            if i > 0 and "Table" in doc.paragraphs[i-1].text and len(doc.paragraphs[i-1].text.split()) < 20:
+                table_info["caption"] = doc.paragraphs[i-1].text
+                table_info["caption_position"] = "before"
+            elif i < len(doc.paragraphs) - 1 and "Table" in doc.paragraphs[i+1].text and len(doc.paragraphs[i+1].text.split()) < 20:
+                table_info["caption"] = doc.paragraphs[i+1].text
+                table_info["caption_position"] = "after"
             
             for r, row in enumerate(table.rows):
                 for c, cell in enumerate(row.cells):
@@ -221,6 +296,16 @@ class DocumentAnalyzer:
             
             doc_info["tables"].append(table_info)
         
+        # Look for figures (approximation based on text patterns)
+        for i, para in enumerate(doc.paragraphs):
+            if "Figure" in para.text and len(para.text.split()) < 20:
+                figure_info = {
+                    "index": i,
+                    "caption": para.text,
+                    "caption_position": "unknown"  # Hard to determine without image analysis
+                }
+                doc_info["figures"].append(figure_info)
+        
         return doc_info
     
     def analyze_documents(self):
@@ -238,8 +323,8 @@ class DocumentAnalyzer:
             sections.append(f"Title: \"{title}\"")
         
         # Look for common sections in academic papers
-        section_keywords = ["ABSTRACT", "Introduction", "Related Work", "Method", "Results", 
-                           "Discussion", "Conclusion", "References"]
+        section_keywords = ["ABSTRACT", "Introduction", "Related Work", "Method", "Materials and Methods",
+                           "Results", "Discussion", "Conclusion", "References"]
         
         for keyword in section_keywords:
             for para in doc_info["paragraphs"]:
@@ -286,15 +371,14 @@ class DocumentAnalyzer:
             formatting.append(f"Tables: {doc_info['tables_count']} tables with specific formatting")
         
         # Citations
-        citation_pattern = r'\[\d+\]'
-        has_numbered_citations = False
-        for para in doc_info["paragraphs"]:
-            if re.search(citation_pattern, para["text"]):
-                has_numbered_citations = True
-                break
+        citation_types = {"numbered": 0, "author-date": 0}
+        for citation in doc_info["citations"]:
+            citation_types[citation["type"]] += 1
         
-        if has_numbered_citations:
+        if citation_types["numbered"] > citation_types["author-date"]:
             formatting.append("Citations: Numbered format [1], [2, 3], [4-6]")
+        elif citation_types["author-date"] > citation_types["numbered"]:
+            formatting.append("Citations: Author-date format (Smith et al., 2020)")
         
         return formatting
     
@@ -325,21 +409,33 @@ class DocumentAnalyzer:
         if len(style_counts) > 10:
             issues.append(f"Inconsistent paragraph styles ({len(style_counts)} different styles detected)")
         
-        # Check for citation format
-        citation_pattern_numbered = r'\[\d+\]'
-        citation_pattern_author_date = r'\([A-Za-z]+ et al\., \d{4}\)'
+        # Check for citation format consistency
+        citation_types = {"numbered": 0, "author-date": 0}
+        for citation in self.article_info["citations"]:
+            citation_types[citation["type"]] += 1
         
-        numbered_citations = 0
-        author_date_citations = 0
+        if citation_types["numbered"] > 0 and citation_types["author-date"] > 0:
+            issues.append(f"Inconsistent citation format (both numbered [{citation_types['numbered']}] and author-date [{citation_types['author-date']}] detected)")
         
+        # Check for table and figure caption consistency
+        table_captions = [table.get("caption") for table in self.article_info["tables"] if table.get("caption")]
+        if len(table_captions) < self.article_info["tables_count"]:
+            issues.append(f"Missing table captions ({self.article_info['tables_count'] - len(table_captions)} tables without captions)")
+        
+        # Check for section numbering consistency
+        section_numbering_patterns = set()
         for para in self.article_info["paragraphs"]:
-            numbered_citations += len(re.findall(citation_pattern_numbered, para["text"]))
-            author_date_citations += len(re.findall(citation_pattern_author_date, para["text"]))
+            if para["style"].lower().startswith("heading"):
+                # Check for different numbering patterns
+                if re.match(r'^[IVX]+\.', para["text"]):  # Roman numerals
+                    section_numbering_patterns.add("roman")
+                elif re.match(r'^\d+\.', para["text"]):  # Decimal
+                    section_numbering_patterns.add("decimal")
+                elif re.match(r'^\d+\.\d+', para["text"]):  # Multi-level decimal
+                    section_numbering_patterns.add("multi-decimal")
         
-        if numbered_citations > 0 and author_date_citations > 0:
-            issues.append(f"Inconsistent citation format (both numbered [{numbered_citations}] and author-date [{author_date_citations}] detected)")
-        elif author_date_citations > 0 and numbered_citations == 0:
-            issues.append(f"Author-date citation format detected instead of numbered format")
+        if len(section_numbering_patterns) > 1:
+            issues.append(f"Inconsistent section numbering patterns ({', '.join(section_numbering_patterns)})")
         
         return issues
     
@@ -353,6 +449,21 @@ class DocumentAnalyzer:
         
         # Compare content organization
         self.compare_content_organization()
+        
+        # Compare citation styles
+        self.compare_citation_styles()
+        
+        # Compare table and figure formatting
+        self.compare_table_figure_formatting()
+        
+        # Compare reference formatting
+        self.compare_reference_formatting()
+        
+        # Compare section numbering
+        self.compare_section_numbering()
+        
+        # Analyze academic quality
+        self.analyze_academic_quality()
         
         # Identify major issues
         self.identify_major_issues()
@@ -461,49 +572,16 @@ class DocumentAnalyzer:
                     "details": f"Template primarily uses {template_main}; Article primarily uses {article_main}"
                 })
         
-        # Compare citation style
-        citation_pattern_numbered = r'\[\d+\]'
-        citation_pattern_author_date = r'\([A-Za-z]+ et al\., \d{4}\)'
-        
-        template_numbered = 0
-        template_author_date = 0
-        article_numbered = 0
-        article_author_date = 0
-        
-        for para in self.template_info["paragraphs"]:
-            template_numbered += len(re.findall(citation_pattern_numbered, para["text"]))
-            template_author_date += len(re.findall(citation_pattern_author_date, para["text"]))
-        
-        for para in self.article_info["paragraphs"]:
-            article_numbered += len(re.findall(citation_pattern_numbered, para["text"]))
-            article_author_date += len(re.findall(citation_pattern_author_date, para["text"]))
-        
-        template_style = "numbered" if template_numbered > template_author_date else "author-date"
-        article_style = "numbered" if article_numbered > article_author_date else "author-date"
-        
-        if template_style == article_style:
-            self.comparison_results["formatting"].append({
-                "element": "Citation Style",
-                "status": "compliant",
-                "details": f"Both documents use {template_style} citation style"
-            })
-        else:
-            self.comparison_results["formatting"].append({
-                "element": "Citation Style",
-                "status": "non-compliant",
-                "details": f"Template uses {template_style} citation style; Article uses {article_style} citation style"
-            })
-        
         # Compare tables
         if self.template_info["tables_count"] == self.article_info["tables_count"]:
             self.comparison_results["formatting"].append({
-                "element": "Tables",
+                "element": "Tables Count",
                 "status": "compliant",
                 "details": f"Both documents have {self.template_info['tables_count']} tables"
             })
         else:
             self.comparison_results["formatting"].append({
-                "element": "Tables",
+                "element": "Tables Count",
                 "status": "non-compliant",
                 "details": f"Template has {self.template_info['tables_count']} tables; Article has {self.article_info['tables_count']} tables"
             })
@@ -572,6 +650,342 @@ class DocumentAnalyzer:
                     "details": f"Template has {template_count} keywords; Article has {article_count} keywords"
                 })
     
+    def compare_citation_styles(self):
+        """Compare citation styles between template and article."""
+        # Count citation types in template
+        template_citation_types = {"numbered": 0, "author-date": 0}
+        for citation in self.template_info["citations"]:
+            template_citation_types[citation["type"]] += 1
+        
+        # Count citation types in article
+        article_citation_types = {"numbered": 0, "author-date": 0}
+        for citation in self.article_info["citations"]:
+            article_citation_types[citation["type"]] += 1
+        
+        # Determine primary citation style in template
+        template_style = "numbered" if template_citation_types["numbered"] > template_citation_types["author-date"] else "author-date"
+        
+        # Determine primary citation style in article
+        article_style = "numbered" if article_citation_types["numbered"] > article_citation_types["author-date"] else "author-date"
+        
+        # Compare citation styles
+        if template_style == article_style:
+            self.comparison_results["citations"].append({
+                "element": "Citation Style",
+                "status": "compliant",
+                "details": f"Both documents use {template_style} citation style"
+            })
+        else:
+            self.comparison_results["citations"].append({
+                "element": "Citation Style",
+                "status": "non-compliant",
+                "details": f"Template uses {template_style} citation style; Article uses {article_style} citation style"
+            })
+        
+        # Check for citation consistency in article
+        if article_citation_types["numbered"] > 0 and article_citation_types["author-date"] > 0:
+            self.comparison_results["citations"].append({
+                "element": "Citation Consistency",
+                "status": "non-compliant",
+                "details": f"Article uses mixed citation styles: {article_citation_types['numbered']} numbered and {article_citation_types['author-date']} author-date citations"
+            })
+        else:
+            self.comparison_results["citations"].append({
+                "element": "Citation Consistency",
+                "status": "compliant",
+                "details": f"Article consistently uses {article_style} citation style"
+            })
+        
+        # Check for citation format in numbered style
+        if article_style == "numbered":
+            # Check for proper formatting of numbered citations
+            proper_format = True
+            improper_examples = []
+            
+            for citation in self.article_info["citations"]:
+                if citation["type"] == "numbered":
+                    # Check if citation follows [n] format
+                    if not re.match(r'^\[\d+(?:[-–,]\d+)*\]$', citation["text"]):
+                        proper_format = False
+                        improper_examples.append(citation["text"])
+            
+            if proper_format:
+                self.comparison_results["citations"].append({
+                    "element": "Numbered Citation Format",
+                    "status": "compliant",
+                    "details": "All numbered citations follow proper format [n]"
+                })
+            else:
+                self.comparison_results["citations"].append({
+                    "element": "Numbered Citation Format",
+                    "status": "non-compliant",
+                    "details": f"Some numbered citations do not follow proper format, examples: {', '.join(improper_examples[:3])}"
+                })
+    
+    def compare_table_figure_formatting(self):
+        """Compare table and figure formatting between template and article."""
+        # Check table captions in template
+        template_tables_with_captions = sum(1 for table in self.template_info["tables"] if table.get("caption"))
+        
+        # Check table captions in article
+        article_tables_with_captions = sum(1 for table in self.article_info["tables"] if table.get("caption"))
+        
+        # Compare table caption presence
+        if self.article_info["tables_count"] > 0:
+            if article_tables_with_captions == self.article_info["tables_count"]:
+                self.comparison_results["tables_figures"].append({
+                    "element": "Table Captions",
+                    "status": "compliant",
+                    "details": "All tables have captions"
+                })
+            else:
+                self.comparison_results["tables_figures"].append({
+                    "element": "Table Captions",
+                    "status": "non-compliant",
+                    "details": f"{self.article_info['tables_count'] - article_tables_with_captions} out of {self.article_info['tables_count']} tables missing captions"
+                })
+        
+        # Check table caption format
+        if article_tables_with_captions > 0:
+            # Check if captions follow "Table X: Description" format
+            proper_format = True
+            improper_examples = []
+            
+            for table in self.article_info["tables"]:
+                if table.get("caption"):
+                    if not re.match(r'^Table \d+[.:] .+', table["caption"]):
+                        proper_format = False
+                        improper_examples.append(table["caption"])
+            
+            if proper_format:
+                self.comparison_results["tables_figures"].append({
+                    "element": "Table Caption Format",
+                    "status": "compliant",
+                    "details": "All table captions follow proper format 'Table X: Description'"
+                })
+            else:
+                self.comparison_results["tables_figures"].append({
+                    "element": "Table Caption Format",
+                    "status": "non-compliant",
+                    "details": f"Some table captions do not follow proper format, examples: {', '.join(improper_examples[:2])}"
+                })
+        
+        # Check figure captions
+        if self.article_info["figures"]:
+            # Check if figure captions follow "Figure X: Description" format
+            proper_format = True
+            improper_examples = []
+            
+            for figure in self.article_info["figures"]:
+                if not re.match(r'^Figure \d+[.:] .+', figure["caption"]):
+                    proper_format = False
+                    improper_examples.append(figure["caption"])
+            
+            if proper_format:
+                self.comparison_results["tables_figures"].append({
+                    "element": "Figure Caption Format",
+                    "status": "compliant",
+                    "details": "All figure captions follow proper format 'Figure X: Description'"
+                })
+            else:
+                self.comparison_results["tables_figures"].append({
+                    "element": "Figure Caption Format",
+                    "status": "non-compliant",
+                    "details": f"Some figure captions do not follow proper format, examples: {', '.join(improper_examples[:2])}"
+                })
+    
+    def compare_reference_formatting(self):
+        """Compare reference formatting between template and article."""
+        # Check if references section exists
+        template_has_references = any(ref["type"] == "heading" for ref in self.template_info["references"])
+        article_has_references = any(ref["type"] == "heading" for ref in self.article_info["references"])
+        
+        if template_has_references and article_has_references:
+            self.comparison_results["references"].append({
+                "element": "References Section",
+                "status": "compliant",
+                "details": "References section present in both documents"
+            })
+        elif not article_has_references:
+            self.comparison_results["references"].append({
+                "element": "References Section",
+                "status": "non-compliant",
+                "details": "References section missing in article"
+            })
+        
+        # Check reference entry format
+        template_reference_format = None
+        article_reference_format = None
+        
+        for ref in self.template_info["references"]:
+            if ref["type"] == "entry" and "format" in ref:
+                template_reference_format = ref["format"]
+                break
+        
+        for ref in self.article_info["references"]:
+            if ref["type"] == "entry" and "format" in ref:
+                article_reference_format = ref["format"]
+                break
+        
+        if template_reference_format and article_reference_format:
+            if template_reference_format == article_reference_format:
+                self.comparison_results["references"].append({
+                    "element": "Reference Format",
+                    "status": "compliant",
+                    "details": f"Both documents use {template_reference_format} reference format"
+                })
+            else:
+                self.comparison_results["references"].append({
+                    "element": "Reference Format",
+                    "status": "non-compliant",
+                    "details": f"Template uses {template_reference_format} reference format; Article uses {article_reference_format} reference format"
+                })
+    
+    def compare_section_numbering(self):
+        """Compare section numbering between template and article."""
+        # Extract section numbering patterns from template
+        template_patterns = set()
+        for para in self.template_info["paragraphs"]:
+            if para["style"].lower().startswith("heading"):
+                if re.match(r'^[IVX]+\.', para["text"]):  # Roman numerals
+                    template_patterns.add("roman")
+                elif re.match(r'^\d+\.', para["text"]):  # Decimal
+                    template_patterns.add("decimal")
+                elif re.match(r'^\d+\.\d+', para["text"]):  # Multi-level decimal
+                    template_patterns.add("multi-decimal")
+        
+        # Extract section numbering patterns from article
+        article_patterns = set()
+        for para in self.article_info["paragraphs"]:
+            if para["style"].lower().startswith("heading"):
+                if re.match(r'^[IVX]+\.', para["text"]):  # Roman numerals
+                    article_patterns.add("roman")
+                elif re.match(r'^\d+\.', para["text"]):  # Decimal
+                    article_patterns.add("decimal")
+                elif re.match(r'^\d+\.\d+', para["text"]):  # Multi-level decimal
+                    article_patterns.add("multi-decimal")
+        
+        # Compare section numbering patterns
+        if template_patterns and article_patterns:
+            if template_patterns == article_patterns:
+                self.comparison_results["section_numbering"].append({
+                    "element": "Section Numbering Pattern",
+                    "status": "compliant",
+                    "details": f"Both documents use {', '.join(template_patterns)} section numbering"
+                })
+            else:
+                self.comparison_results["section_numbering"].append({
+                    "element": "Section Numbering Pattern",
+                    "status": "non-compliant",
+                    "details": f"Template uses {', '.join(template_patterns)} numbering; Article uses {', '.join(article_patterns)} numbering"
+                })
+        
+        # Check for section numbering consistency in article
+        if len(article_patterns) > 1:
+            self.comparison_results["section_numbering"].append({
+                "element": "Section Numbering Consistency",
+                "status": "non-compliant",
+                "details": f"Article uses inconsistent section numbering patterns: {', '.join(article_patterns)}"
+            })
+        elif len(article_patterns) == 1:
+            self.comparison_results["section_numbering"].append({
+                "element": "Section Numbering Consistency",
+                "status": "compliant",
+                "details": f"Article consistently uses {next(iter(article_patterns))} section numbering"
+            })
+    
+    def analyze_academic_quality(self):
+        """Analyze academic quality metrics."""
+        # Calculate sentence length variation
+        sentences = []
+        for para in self.article_info["paragraphs"]:
+            # Simple sentence splitting
+            para_sentences = re.split(r'[.!?]+', para["text"])
+            sentences.extend([s.strip() for s in para_sentences if s.strip()])
+        
+        sentence_lengths = [len(s.split()) for s in sentences]
+        
+        if sentence_lengths:
+            avg_length = sum(sentence_lengths) / len(sentence_lengths)
+            min_length = min(sentence_lengths)
+            max_length = max(sentence_lengths)
+            
+            if min_length < 5 and max_length > 40:
+                self.comparison_results["academic_quality"].append({
+                    "element": "Sentence Length Variation",
+                    "status": "non-compliant",
+                    "details": f"High sentence length variation (min: {min_length}, max: {max_length}, avg: {avg_length:.1f})"
+                })
+            elif 10 <= avg_length <= 25:
+                self.comparison_results["academic_quality"].append({
+                    "element": "Sentence Length Variation",
+                    "status": "compliant",
+                    "details": f"Appropriate sentence length variation (min: {min_length}, max: {max_length}, avg: {avg_length:.1f})"
+                })
+            else:
+                self.comparison_results["academic_quality"].append({
+                    "element": "Sentence Length Variation",
+                    "status": "partially-compliant",
+                    "details": f"Suboptimal sentence length variation (min: {min_length}, max: {max_length}, avg: {avg_length:.1f})"
+                })
+        
+        # Check for passive voice usage
+        passive_indicators = ["is", "are", "was", "were", "be", "been", "being"]
+        passive_count = 0
+        
+        for sentence in sentences:
+            words = sentence.lower().split()
+            if any(indicator in words for indicator in passive_indicators) and "by" in words:
+                passive_count += 1
+        
+        passive_percentage = (passive_count / len(sentences) * 100) if sentences else 0
+        
+        if passive_percentage > 30:
+            self.comparison_results["academic_quality"].append({
+                "element": "Passive Voice Usage",
+                "status": "non-compliant",
+                "details": f"Excessive passive voice usage ({passive_percentage:.1f}% of sentences)"
+            })
+        elif passive_percentage > 15:
+            self.comparison_results["academic_quality"].append({
+                "element": "Passive Voice Usage",
+                "status": "partially-compliant",
+                "details": f"Moderate passive voice usage ({passive_percentage:.1f}% of sentences)"
+            })
+        else:
+            self.comparison_results["academic_quality"].append({
+                "element": "Passive Voice Usage",
+                "status": "compliant",
+                "details": f"Appropriate passive voice usage ({passive_percentage:.1f}% of sentences)"
+            })
+        
+        # Check for paragraph length consistency
+        paragraph_lengths = [len(para["text"].split()) for para in self.article_info["paragraphs"] if para["text"].strip()]
+        
+        if paragraph_lengths:
+            avg_para_length = sum(paragraph_lengths) / len(paragraph_lengths)
+            min_para_length = min(paragraph_lengths)
+            max_para_length = max(paragraph_lengths)
+            
+            if min_para_length < 20 and max_para_length > 300:
+                self.comparison_results["academic_quality"].append({
+                    "element": "Paragraph Length Consistency",
+                    "status": "non-compliant",
+                    "details": f"Inconsistent paragraph lengths (min: {min_para_length}, max: {max_para_length}, avg: {avg_para_length:.1f})"
+                })
+            elif 50 <= avg_para_length <= 200:
+                self.comparison_results["academic_quality"].append({
+                    "element": "Paragraph Length Consistency",
+                    "status": "compliant",
+                    "details": f"Appropriate paragraph lengths (min: {min_para_length}, max: {max_para_length}, avg: {avg_para_length:.1f})"
+                })
+            else:
+                self.comparison_results["academic_quality"].append({
+                    "element": "Paragraph Length Consistency",
+                    "status": "partially-compliant",
+                    "details": f"Suboptimal paragraph lengths (min: {min_para_length}, max: {max_para_length}, avg: {avg_para_length:.1f})"
+                })
+    
     def identify_major_issues(self):
         """Identify major issues based on comparison results."""
         # Structure issues
@@ -604,6 +1018,56 @@ class DocumentAnalyzer:
                 "issue": f"Non-compliant content: {', '.join(non_compliant_content)}"
             })
         
+        # Citation issues
+        non_compliant_citations = [item["element"] for item in self.comparison_results["citations"] 
+                                  if item["status"] == "non-compliant"]
+        
+        if non_compliant_citations:
+            self.comparison_results["major_issues"].append({
+                "category": "Citations",
+                "issue": f"Non-compliant citations: {', '.join(non_compliant_citations)}"
+            })
+        
+        # Table and figure issues
+        non_compliant_tables_figures = [item["element"] for item in self.comparison_results["tables_figures"] 
+                                       if item["status"] == "non-compliant"]
+        
+        if non_compliant_tables_figures:
+            self.comparison_results["major_issues"].append({
+                "category": "Tables and Figures",
+                "issue": f"Non-compliant tables/figures: {', '.join(non_compliant_tables_figures)}"
+            })
+        
+        # Reference issues
+        non_compliant_references = [item["element"] for item in self.comparison_results["references"] 
+                                   if item["status"] == "non-compliant"]
+        
+        if non_compliant_references:
+            self.comparison_results["major_issues"].append({
+                "category": "References",
+                "issue": f"Non-compliant references: {', '.join(non_compliant_references)}"
+            })
+        
+        # Section numbering issues
+        non_compliant_section_numbering = [item["element"] for item in self.comparison_results["section_numbering"] 
+                                          if item["status"] == "non-compliant"]
+        
+        if non_compliant_section_numbering:
+            self.comparison_results["major_issues"].append({
+                "category": "Section Numbering",
+                "issue": f"Non-compliant section numbering: {', '.join(non_compliant_section_numbering)}"
+            })
+        
+        # Academic quality issues
+        non_compliant_academic_quality = [item["element"] for item in self.comparison_results["academic_quality"] 
+                                         if item["status"] == "non-compliant"]
+        
+        if non_compliant_academic_quality:
+            self.comparison_results["major_issues"].append({
+                "category": "Academic Quality",
+                "issue": f"Academic quality issues: {', '.join(non_compliant_academic_quality)}"
+            })
+        
         # Check for grammatical issues
         error_count = 0
         for para in self.article_info["paragraphs"]:
@@ -623,43 +1087,46 @@ class DocumentAnalyzer:
     
     def generate_compliance_chart(self):
         """Generate a chart visualizing compliance status."""
-        # Count compliance status
-        categories = ["Structure", "Formatting", "Content"]
+        # Count compliance status for each category
+        categories = ["Structure", "Formatting", "Content", "Citations", "Tables/Figures", "References", "Section Numbering", "Academic Quality"]
+        category_keys = ["structure", "formatting", "content", "citations", "tables_figures", "references", "section_numbering", "academic_quality"]
+        
         compliant = []
         non_compliant = []
+        partially_compliant = []
         
-        for category in ["structure", "formatting", "content"]:
+        for category in category_keys:
             category_items = self.comparison_results[category]
-            category_compliant = sum(1 for item in category_items if item.get("status") == "compliant")
-            category_total = len(category_items)
-            
-            if category_total > 0:
+            if category_items:
+                category_compliant = sum(1 for item in category_items if item.get("status") == "compliant")
+                category_non_compliant = sum(1 for item in category_items if item.get("status") == "non-compliant")
+                category_partially = sum(1 for item in category_items if item.get("status") == "partially-compliant")
+                category_total = len(category_items)
+                
                 compliant.append(category_compliant / category_total * 100)
-                non_compliant.append(100 - (category_compliant / category_total * 100))
+                non_compliant.append(category_non_compliant / category_total * 100)
+                partially_compliant.append(category_partially / category_total * 100)
             else:
                 compliant.append(0)
                 non_compliant.append(0)
+                partially_compliant.append(0)
         
         # Create chart
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=(12, 6))
         
         x = np.arange(len(categories))
-        width = 0.35
+        width = 0.25
         
-        ax.bar(x, compliant, width, label='Compliant', color='#4CAF50')
-        ax.bar(x, non_compliant, width, bottom=compliant, label='Non-Compliant', color='#F44336')
+        ax.bar(x - width, compliant, width, label='Compliant', color='#4CAF50')
+        ax.bar(x, partially_compliant, width, label='Partially Compliant', color='#FFC107')
+        ax.bar(x + width, non_compliant, width, label='Non-Compliant', color='#F44336')
         
         ax.set_title('Compliance by Category')
         ax.set_ylabel('Percentage')
         ax.set_yticks(np.arange(0, 101, 20))
         ax.set_xticks(x)
-        ax.set_xticklabels(categories)
+        ax.set_xticklabels(categories, rotation=45, ha='right')
         ax.legend()
-        
-        # Add percentage labels
-        for i, v in enumerate(compliant):
-            ax.text(i, v/2, f"{v:.1f}%", ha='center', va='center', color='white', fontweight='bold')
-            ax.text(i, v + non_compliant[i]/2, f"{non_compliant[i]:.1f}%", ha='center', va='center', color='white', fontweight='bold')
         
         plt.tight_layout()
         
@@ -677,19 +1144,12 @@ class DocumentAnalyzer:
         self.compare_documents()
         return self.comparison_results
 
-def get_table_download_link(df, filename, text):
-    """Generate a link to download the dataframe as a CSV file."""
-    csv = df.to_csv(index=False)
-    b64 = base64.b64encode(csv.encode()).decode()
-    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}.csv">{text}</a>'
-    return href
-
 def main():
-    st.title("DOCX Format Checker")
+    st.title("QAJ Format Checker")
     
     st.markdown("""
-    This tool compares a document against a template to check for format compliance. 
-    Upload a template document and an article document to analyze their structure, formatting, and content.
+    This tool compares documents against the QAJ template to check for format compliance. 
+    Upload a QAJ template document and an article document to analyze their structure, formatting, and content.
     """)
     
     # File upload
@@ -697,11 +1157,11 @@ def main():
     
     with col1:
         st.subheader("Template Document")
-        template_file = st.file_uploader("Upload template document", type=["docx"], key="template")
+        template_file = st.file_uploader("Upload QAJ template document", type=["docx"], key="template")
     
     with col2:
         st.subheader("Article Document")
-        article_file = st.file_uploader("Upload article document", type=["docx"], key="article")
+        article_file = st.file_uploader("Upload article document to check", type=["docx"], key="article")
     
     if template_file and article_file:
         # Run analysis
@@ -718,35 +1178,46 @@ def main():
         # Calculate overall compliance
         total_items = 0
         compliant_items = 0
+        partially_compliant_items = 0
         
-        for category in ["structure", "formatting", "content"]:
+        for category in ["structure", "formatting", "content", "citations", "tables_figures", 
+                         "references", "section_numbering", "academic_quality"]:
             category_items = comparison_results[category]
             total_items += len(category_items)
             compliant_items += sum(1 for item in category_items if item.get("status") == "compliant")
+            partially_compliant_items += sum(1 for item in category_items if item.get("status") == "partially-compliant")
         
         compliance_percentage = (compliant_items / total_items * 100) if total_items > 0 else 0
+        partial_percentage = (partially_compliant_items / total_items * 100) if total_items > 0 else 0
         
         # Display compliance score
         st.subheader("Overall Compliance")
         
-        col1, col2 = st.columns([1, 3])
+        col1, col2, col3 = st.columns([1, 1, 2])
         
         with col1:
             st.metric("Compliance Score", f"{compliance_percentage:.1f}%")
         
         with col2:
+            st.metric("Partial Compliance", f"{partial_percentage:.1f}%")
+        
+        with col3:
             if compliance_percentage >= 80:
-                st.success("The document is **largely compliant** with the template requirements.")
+                st.success("The document is **largely compliant** with the QAJ template requirements.")
             elif compliance_percentage >= 50:
-                st.warning("The document is **partially compliant** with the template requirements.")
+                st.warning("The document is **partially compliant** with the QAJ template requirements.")
             else:
-                st.error("The document is **mostly non-compliant** with the template requirements.")
+                st.error("The document is **mostly non-compliant** with the QAJ template requirements.")
         
         # Display compliance chart
         st.image(chart_image, caption="Compliance by Category", use_column_width=True)
         
         # Create tabs for different sections
-        tab1, tab2, tab3, tab4 = st.tabs(["Major Issues", "Structure", "Formatting", "Content"])
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+            "Major Issues", "Structure", "Formatting", "Content", 
+            "Citations", "Tables & Figures", "References", 
+            "Section Numbering", "Academic Quality"
+        ])
         
         with tab1:
             st.subheader("Major Issues")
@@ -827,6 +1298,224 @@ def main():
                 unsafe_allow_html=True
             )
         
+        with tab5:
+            st.subheader("Citation Analysis")
+            
+            # Create table
+            table_data = []
+            for item in comparison_results["citations"]:
+                if item["status"] == "compliant":
+                    status_symbol = "✅"
+                    status_class = "compliance-compliant"
+                elif item["status"] == "partially-compliant":
+                    status_symbol = "⚠️"
+                    status_class = "compliance-partially-compliant"
+                else:
+                    status_symbol = "❌"
+                    status_class = "compliance-non-compliant"
+                
+                table_data.append([
+                    item["element"], 
+                    f'<span class="{status_class}">{status_symbol}</span>', 
+                    item["details"]
+                ])
+            
+            # Display table
+            st.markdown(
+                tabulate(table_data, headers=["Element", "Status", "Details"], tablefmt="html"),
+                unsafe_allow_html=True
+            )
+            
+            # Citation guidance
+            st.markdown("### Citation Format Guidance")
+            st.markdown("""
+            QAJ requires **numbered citation format**. Examples of proper citation format:
+            
+            - Single reference: <span class="citation-example">[1]</span>
+            - Multiple references: <span class="citation-example">[1, 2, 3]</span>
+            - Range of references: <span class="citation-example">[1-3]</span>
+            
+            Citations should be numbered consecutively in the order in which they appear in the text.
+            """, unsafe_allow_html=True)
+        
+        with tab6:
+            st.subheader("Tables & Figures Analysis")
+            
+            # Create table
+            table_data = []
+            for item in comparison_results["tables_figures"]:
+                if item["status"] == "compliant":
+                    status_symbol = "✅"
+                    status_class = "compliance-compliant"
+                elif item["status"] == "partially-compliant":
+                    status_symbol = "⚠️"
+                    status_class = "compliance-partially-compliant"
+                else:
+                    status_symbol = "❌"
+                    status_class = "compliance-non-compliant"
+                
+                table_data.append([
+                    item["element"], 
+                    f'<span class="{status_class}">{status_symbol}</span>', 
+                    item["details"]
+                ])
+            
+            # Display table
+            st.markdown(
+                tabulate(table_data, headers=["Element", "Status", "Details"], tablefmt="html"),
+                unsafe_allow_html=True
+            )
+            
+            # Table and figure guidance
+            st.markdown("### Table & Figure Format Guidance")
+            st.markdown("""
+            **Table Format Requirements:**
+            - Tables should be numbered consecutively
+            - Table captions should be placed above the table
+            - Format: <span class="citation-example">Table 1: Description of the table</span>
+            
+            **Figure Format Requirements:**
+            - Figures should be numbered consecutively
+            - Figure captions should be placed below the figure
+            - Format: <span class="citation-example">Figure 1: Description of the figure</span>
+            """, unsafe_allow_html=True)
+        
+        with tab7:
+            st.subheader("References Analysis")
+            
+            # Create table
+            table_data = []
+            for item in comparison_results["references"]:
+                if item["status"] == "compliant":
+                    status_symbol = "✅"
+                    status_class = "compliance-compliant"
+                elif item["status"] == "partially-compliant":
+                    status_symbol = "⚠️"
+                    status_class = "compliance-partially-compliant"
+                else:
+                    status_symbol = "❌"
+                    status_class = "compliance-non-compliant"
+                
+                table_data.append([
+                    item["element"], 
+                    f'<span class="{status_class}">{status_symbol}</span>', 
+                    item["details"]
+                ])
+            
+            # Display table
+            st.markdown(
+                tabulate(table_data, headers=["Element", "Status", "Details"], tablefmt="html"),
+                unsafe_allow_html=True
+            )
+            
+            # Reference guidance
+            st.markdown("### Reference Format Guidance")
+            st.markdown("""
+            QAJ requires **numbered reference format** that corresponds to the citation numbers in the text.
+            
+            **Journal Article Format:**
+            <span class="citation-example">[1] Author A, Author B, Author C. Title of article. Journal Name. Year;Volume(Issue):Page range.</span>
+            
+            **Book Format:**
+            <span class="citation-example">[2] Author A, Author B. Title of book. Edition. City: Publisher; Year.</span>
+            
+            **Book Chapter Format:**
+            <span class="citation-example">[3] Author A, Author B. Title of chapter. In: Editor A, Editor B, editors. Title of book. City: Publisher; Year. p. Page range.</span>
+            
+            **Website Format:**
+            <span class="citation-example">[4] Author/Organization. Title of webpage [Internet]. Publisher; Year [cited Date]. Available from: URL</span>
+            """, unsafe_allow_html=True)
+        
+        with tab8:
+            st.subheader("Section Numbering Analysis")
+            
+            # Create table
+            table_data = []
+            for item in comparison_results["section_numbering"]:
+                if item["status"] == "compliant":
+                    status_symbol = "✅"
+                    status_class = "compliance-compliant"
+                elif item["status"] == "partially-compliant":
+                    status_symbol = "⚠️"
+                    status_class = "compliance-partially-compliant"
+                else:
+                    status_symbol = "❌"
+                    status_class = "compliance-non-compliant"
+                
+                table_data.append([
+                    item["element"], 
+                    f'<span class="{status_class}">{status_symbol}</span>', 
+                    item["details"]
+                ])
+            
+            # Display table
+            st.markdown(
+                tabulate(table_data, headers=["Element", "Status", "Details"], tablefmt="html"),
+                unsafe_allow_html=True
+            )
+            
+            # Section numbering guidance
+            st.markdown("### Section Numbering Guidance")
+            st.markdown("""
+            QAJ requires consistent section numbering throughout the document.
+            
+            **Main Sections (Level 1):**
+            - Should use Roman numerals: <span class="citation-example">I. Introduction</span>
+            
+            **Subsections (Level 2):**
+            - Should use decimal numbering: <span class="citation-example">1.1 Background</span>
+            
+            **Sub-subsections (Level 3):**
+            - Should use multi-level decimal numbering: <span class="citation-example">1.1.1 Historical Context</span>
+            """, unsafe_allow_html=True)
+        
+        with tab9:
+            st.subheader("Academic Quality Analysis")
+            
+            # Create table
+            table_data = []
+            for item in comparison_results["academic_quality"]:
+                if item["status"] == "compliant":
+                    status_symbol = "✅"
+                    status_class = "compliance-compliant"
+                elif item["status"] == "partially-compliant":
+                    status_symbol = "⚠️"
+                    status_class = "compliance-partially-compliant"
+                else:
+                    status_symbol = "❌"
+                    status_class = "compliance-non-compliant"
+                
+                table_data.append([
+                    item["element"], 
+                    f'<span class="{status_class}">{status_symbol}</span>', 
+                    item["details"]
+                ])
+            
+            # Display table
+            st.markdown(
+                tabulate(table_data, headers=["Element", "Status", "Details"], tablefmt="html"),
+                unsafe_allow_html=True
+            )
+            
+            # Academic quality guidance
+            st.markdown("### Academic Writing Quality Guidance")
+            st.markdown("""
+            **Sentence Length:**
+            - Aim for an average sentence length of 15-25 words
+            - Vary sentence length for better readability
+            - Avoid extremely short (<5 words) or long (>40 words) sentences
+            
+            **Passive Voice:**
+            - Use passive voice sparingly (less than 20% of sentences)
+            - Use active voice for clarity and directness
+            - Passive voice is appropriate when the actor is unknown or unimportant
+            
+            **Paragraph Structure:**
+            - Each paragraph should focus on a single idea
+            - Aim for paragraphs of 3-7 sentences (50-200 words)
+            - Use topic sentences to introduce the main idea of each paragraph
+            """, unsafe_allow_html=True)
+        
         # Recommendations
         st.subheader("Recommendations")
         
@@ -836,9 +1525,9 @@ def main():
             for issue in comparison_results["major_issues"]:
                 st.markdown(f"1. **{issue['category']}**: Address {issue['issue'].lower()}")
             
-            st.markdown("Refer to the template document for specific formatting and structure requirements.")
+            st.markdown("Refer to the QAJ template document for specific formatting and structure requirements.")
         else:
-            st.success("The document appears to be compliant with the template requirements.")
+            st.success("The document appears to be compliant with the QAJ template requirements.")
 
 if __name__ == "__main__":
     main()
