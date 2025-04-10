@@ -1373,7 +1373,7 @@ def main():
                        "</ul></div>", unsafe_allow_html=True)
         
         # Display compliance chart
-        st.image(chart_image, caption="Compliance by Category", use_column_width=True)
+        st.image(chart_image, caption="Compliance by Category", use_container_width=True)
         
         # Create tabs for different sections
         tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
