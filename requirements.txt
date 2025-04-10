@@ -4,4 +4,3 @@ nltk
 python-docx
 streamlit
 tabulate
-
