@@ -88,6 +88,14 @@ st.markdown("""
         padding: 0.2rem 0.4rem;
         border-radius: 0.2rem;
     }
+    .critical-issue {
+        color: #721c24;
+        background-color: #f8d7da;
+        padding: 0.75rem;
+        margin-bottom: 1rem;
+        border: 1px solid #f5c6cb;
+        border-radius: 0.25rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -114,6 +122,8 @@ class DocumentAnalyzer:
             "references": [],
             "section_numbering": [],
             "academic_quality": [],
+            "journal_citation": [],
+            "self_citation": [],
             "major_issues": []
         }
     
@@ -139,7 +149,9 @@ class DocumentAnalyzer:
             "tables": [],
             "figures": [],
             "citations": [],
-            "references": []
+            "references": [],
+            "authors": [],
+            "affiliations": []
         }
         
         # Extract styles information
@@ -238,6 +250,21 @@ class DocumentAnalyzer:
                         "text": para.text,
                         "paragraph_index": i,
                         "format": "numbered" if re.match(r'^\[\d+\]', para.text) else "decimal"
+                    })
+            
+            # Extract author information (usually in the first few paragraphs)
+            if i < 5:
+                # Look for author names and affiliations
+                if re.search(r'^[A-Z][a-z]+ [A-Z][a-z]+', para.text) and len(para.text.split()) < 10:
+                    doc_info["authors"].append({
+                        "text": para.text,
+                        "paragraph_index": i
+                    })
+                # Look for affiliations
+                if re.search(r'Department|University|Institute|College', para.text) and len(para.text.split()) < 20:
+                    doc_info["affiliations"].append({
+                        "text": para.text,
+                        "paragraph_index": i
                     })
         
         # Extract section information
@@ -464,6 +491,12 @@ class DocumentAnalyzer:
         
         # Analyze academic quality
         self.analyze_academic_quality()
+        
+        # Check for Qubahan Academic Journal citation
+        self.check_journal_citation()
+        
+        # Check for self-citation
+        self.check_self_citation()
         
         # Identify major issues
         self.identify_major_issues()
@@ -986,6 +1019,93 @@ class DocumentAnalyzer:
                     "details": f"Suboptimal paragraph lengths (min: {min_para_length}, max: {max_para_length}, avg: {avg_para_length:.1f})"
                 })
     
+    def check_journal_citation(self):
+        """Check if Qubahan Academic Journal is cited in the document."""
+        # Look for Qubahan Academic Journal citation in text
+        qaj_cited_in_text = False
+        qaj_cited_in_references = False
+        
+        # Check in text
+        for para in self.article_info["paragraphs"]:
+            if re.search(r'Qubahan Academic Journal|QAJ', para["text"], re.IGNORECASE):
+                qaj_cited_in_text = True
+                break
+        
+        # Check in references
+        for ref in self.article_info["references"]:
+            if ref["type"] == "entry" and re.search(r'Qubahan Academic Journal|QAJ', ref["text"], re.IGNORECASE):
+                qaj_cited_in_references = True
+                break
+        
+        # Add results to comparison
+        if qaj_cited_in_text:
+            self.comparison_results["journal_citation"].append({
+                "element": "QAJ Citation in Text",
+                "status": "compliant",
+                "details": "Qubahan Academic Journal is cited in the text"
+            })
+        else:
+            self.comparison_results["journal_citation"].append({
+                "element": "QAJ Citation in Text",
+                "status": "non-compliant",
+                "details": "Qubahan Academic Journal is not cited in the text"
+            })
+        
+        if qaj_cited_in_references:
+            self.comparison_results["journal_citation"].append({
+                "element": "QAJ Citation in References",
+                "status": "compliant",
+                "details": "Qubahan Academic Journal is cited in the references"
+            })
+        else:
+            self.comparison_results["journal_citation"].append({
+                "element": "QAJ Citation in References",
+                "status": "non-compliant",
+                "details": "Qubahan Academic Journal is not cited in the references"
+            })
+    
+    def check_self_citation(self):
+        """Check for self-citation in the document."""
+        # Extract author names from the document
+        author_names = []
+        for author in self.article_info["authors"]:
+            # Extract last names
+            name_parts = author["text"].split()
+            if name_parts:
+                author_names.append(name_parts[-1])  # Last name
+        
+        # Check for self-citation in references
+        self_citations = []
+        
+        for ref in self.article_info["references"]:
+            if ref["type"] == "entry":
+                for author_name in author_names:
+                    if author_name in ref["text"]:
+                        self_citations.append(ref["text"])
+        
+        # Add results to comparison
+        if self_citations:
+            self.comparison_results["self_citation"].append({
+                "element": "Self-Citation",
+                "status": "non-compliant",
+                "details": f"Self-citation detected: {len(self_citations)} instances found"
+            })
+            
+            # Add examples of self-citations
+            if len(self_citations) > 0:
+                examples = self_citations[:2]  # Limit to 2 examples
+                self.comparison_results["self_citation"].append({
+                    "element": "Self-Citation Examples",
+                    "status": "non-compliant",
+                    "details": f"Examples: {'; '.join(examples)}"
+                })
+        else:
+            self.comparison_results["self_citation"].append({
+                "element": "Self-Citation",
+                "status": "compliant",
+                "details": "No self-citation detected in the document"
+            })
+    
     def identify_major_issues(self):
         """Identify major issues based on comparison results."""
         # Structure issues
@@ -1068,6 +1188,26 @@ class DocumentAnalyzer:
                 "issue": f"Academic quality issues: {', '.join(non_compliant_academic_quality)}"
             })
         
+        # Journal citation issues
+        non_compliant_journal_citation = [item["element"] for item in self.comparison_results["journal_citation"] 
+                                         if item["status"] == "non-compliant"]
+        
+        if non_compliant_journal_citation:
+            self.comparison_results["major_issues"].append({
+                "category": "Journal Citation",
+                "issue": f"Journal citation issues: {', '.join(non_compliant_journal_citation)}"
+            })
+        
+        # Self-citation issues
+        non_compliant_self_citation = [item["element"] for item in self.comparison_results["self_citation"] 
+                                      if item["status"] == "non-compliant" and item["element"] == "Self-Citation"]
+        
+        if non_compliant_self_citation:
+            self.comparison_results["major_issues"].append({
+                "category": "Self-Citation",
+                "issue": "Self-citation detected in the document"
+            })
+        
         # Check for grammatical issues
         error_count = 0
         for para in self.article_info["paragraphs"]:
@@ -1088,8 +1228,10 @@ class DocumentAnalyzer:
     def generate_compliance_chart(self):
         """Generate a chart visualizing compliance status."""
         # Count compliance status for each category
-        categories = ["Structure", "Formatting", "Content", "Citations", "Tables/Figures", "References", "Section Numbering", "Academic Quality"]
-        category_keys = ["structure", "formatting", "content", "citations", "tables_figures", "references", "section_numbering", "academic_quality"]
+        categories = ["Structure", "Formatting", "Content", "Citations", "Tables/Figures", 
+                     "References", "Section Numbering", "Academic Quality", "Journal Citation", "Self-Citation"]
+        category_keys = ["structure", "formatting", "content", "citations", "tables_figures", 
+                        "references", "section_numbering", "academic_quality", "journal_citation", "self_citation"]
         
         compliant = []
         non_compliant = []
@@ -1112,7 +1254,7 @@ class DocumentAnalyzer:
                 partially_compliant.append(0)
         
         # Create chart
-        fig, ax = plt.subplots(figsize=(12, 6))
+        fig, ax = plt.subplots(figsize=(14, 7))
         
         x = np.arange(len(categories))
         width = 0.25
@@ -1181,7 +1323,7 @@ def main():
         partially_compliant_items = 0
         
         for category in ["structure", "formatting", "content", "citations", "tables_figures", 
-                         "references", "section_numbering", "academic_quality"]:
+                         "references", "section_numbering", "academic_quality", "journal_citation", "self_citation"]:
             category_items = comparison_results[category]
             total_items += len(category_items)
             compliant_items += sum(1 for item in category_items if item.get("status") == "compliant")
@@ -1209,14 +1351,35 @@ def main():
             else:
                 st.error("The document is **mostly non-compliant** with the QAJ template requirements.")
         
+        # Check for critical issues (QAJ citation and self-citation)
+        critical_issues = []
+        
+        # Check QAJ citation
+        qaj_citation_issues = [item for item in comparison_results["journal_citation"] 
+                              if item["status"] == "non-compliant"]
+        if qaj_citation_issues:
+            critical_issues.append("Qubahan Academic Journal is not cited in the document")
+        
+        # Check self-citation
+        self_citation_issues = [item for item in comparison_results["self_citation"] 
+                               if item["status"] == "non-compliant" and item["element"] == "Self-Citation"]
+        if self_citation_issues:
+            critical_issues.append("Self-citation detected in the document")
+        
+        # Display critical issues
+        if critical_issues:
+            st.markdown("<div class='critical-issue'><strong>Critical Issues:</strong><ul>" + 
+                       "".join([f"<li>{issue}</li>" for issue in critical_issues]) + 
+                       "</ul></div>", unsafe_allow_html=True)
+        
         # Display compliance chart
         st.image(chart_image, caption="Compliance by Category", use_column_width=True)
         
         # Create tabs for different sections
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
             "Major Issues", "Structure", "Formatting", "Content", 
             "Citations", "Tables & Figures", "References", 
-            "Section Numbering", "Academic Quality"
+            "Section Numbering", "Academic Quality", "Journal Citation", "Self-Citation"
         ])
         
         with tab1:
@@ -1514,6 +1677,97 @@ def main():
             - Each paragraph should focus on a single idea
             - Aim for paragraphs of 3-7 sentences (50-200 words)
             - Use topic sentences to introduce the main idea of each paragraph
+            """, unsafe_allow_html=True)
+        
+        with tab10:
+            st.subheader("Journal Citation Analysis")
+            
+            # Create table
+            table_data = []
+            for item in comparison_results["journal_citation"]:
+                if item["status"] == "compliant":
+                    status_symbol = "✅"
+                    status_class = "compliance-compliant"
+                elif item["status"] == "partially-compliant":
+                    status_symbol = "⚠️"
+                    status_class = "compliance-partially-compliant"
+                else:
+                    status_symbol = "❌"
+                    status_class = "compliance-non-compliant"
+                
+                table_data.append([
+                    item["element"], 
+                    f'<span class="{status_class}">{status_symbol}</span>', 
+                    item["details"]
+                ])
+            
+            # Display table
+            st.markdown(
+                tabulate(table_data, headers=["Element", "Status", "Details"], tablefmt="html"),
+                unsafe_allow_html=True
+            )
+            
+            # Journal citation guidance
+            st.markdown("### Journal Citation Guidance")
+            st.markdown("""
+            **QAJ Citation Requirement:**
+            
+            QAJ requires that all submitted articles cite at least one relevant article from Qubahan Academic Journal. This is a critical requirement for submission acceptance.
+            
+            **How to Cite QAJ:**
+            
+            <span class="citation-example">[n] Author A, Author B. Title of article. Qubahan Academic Journal. Year;Volume(Issue):Page range.</span>
+            
+            You can find relevant QAJ articles to cite at the [Qubahan Academic Journal website](https://journals.qub.edu.iq/).
+            """, unsafe_allow_html=True)
+        
+        with tab11:
+            st.subheader("Self-Citation Analysis")
+            
+            # Create table
+            table_data = []
+            for item in comparison_results["self_citation"]:
+                if item["status"] == "compliant":
+                    status_symbol = "✅"
+                    status_class = "compliance-compliant"
+                elif item["status"] == "partially-compliant":
+                    status_symbol = "⚠️"
+                    status_class = "compliance-partially-compliant"
+                else:
+                    status_symbol = "❌"
+                    status_class = "compliance-non-compliant"
+                
+                table_data.append([
+                    item["element"], 
+                    f'<span class="{status_class}">{status_symbol}</span>', 
+                    item["details"]
+                ])
+            
+            # Display table
+            st.markdown(
+                tabulate(table_data, headers=["Element", "Status", "Details"], tablefmt="html"),
+                unsafe_allow_html=True
+            )
+            
+            # Self-citation guidance
+            st.markdown("### Self-Citation Guidance")
+            st.markdown("""
+            **Self-Citation Policy:**
+            
+            QAJ prohibits self-citation in submitted articles. Self-citation occurs when authors cite their own previous works in the references.
+            
+            **Why Self-Citation is Prohibited:**
+            
+            - Maintains objectivity in academic discourse
+            - Prevents artificial inflation of citation metrics
+            - Ensures diverse perspectives in the literature review
+            
+            **How to Address Self-Citation:**
+            
+            If you need to reference your previous work, consider:
+            - Citing related work by other researchers instead
+            - Focusing on the broader field rather than specific papers
+            - Consulting with the journal editor for specific cases
             """, unsafe_allow_html=True)
         
         # Recommendations
