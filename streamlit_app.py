@@ -1287,7 +1287,7 @@ class DocumentAnalyzer:
         return self.comparison_results
 
 def main():
-    st.title("QAJ Format Checker")
+    st.title("QAJ Format Checker by Ridwan Marqas")
     
     st.markdown("""
     This tool compares documents against the QAJ template to check for format compliance. 
