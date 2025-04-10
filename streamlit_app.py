@@ -23,7 +23,7 @@ except LookupError:
 
 # Set page configuration
 st.set_page_config(
-    page_title="DOCX Format Checker",
+    page_title="QAJ DOCX Format Checker by Ridwan Marqas",
     page_icon="📄",
     layout="wide",
     initial_sidebar_state="expanded"
